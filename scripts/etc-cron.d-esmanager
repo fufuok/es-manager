@@ -1,0 +1,1 @@
+0 2 * * * root . /etc/profile.d/esmanager.sh && /opt/XY.ESManager/main.py >/opt/XY.ESManager/log/cron.log 2>&1
