@@ -6,6 +6,8 @@
     ES 管理脚本
 
     :author: Fufu, 2021/7/23
+    :update: Fufu, 2021/8/21 调整结构, 新建索引时参考昨天的索引而不是今天
+    :update: Fufu, 2021/9/18 超时时间增加到 240s, 创建索引失败记录并重试
 """
 import os
 import sys
@@ -60,6 +62,7 @@ def create_new_indexs():
     suffix = {yesterday.strftime(x): tomorrow.strftime(x) for x in ['_%y%m%d', '.%m.%d']}
 
     remove_settings = ['uuid', 'provided_name', 'version', 'creation_date']
+    retries_indexs = []
 
     for a, b in suffix.items():
         pos = len(a)
@@ -70,24 +73,29 @@ def create_new_indexs():
                 conf['settings']['index'].pop(x)
             index_b = index[:-pos] + b
             # 建明天的索引
-            create_index(index_b, conf)
+            if not create_index(index_b, conf):
+                retries_indexs.append([index_b, conf])
+
+    for x in retries_indexs:
+        create_index(*x)
 
 
 def create_index(index_b, conf):
     """建明天的索引"""
     try:
-        ES.indices.create(index_b, body=conf, timeout='180s', ignore=400)
+        ES.indices.create(index_b, body=conf, timeout='240s', ignore=400)
     except Exception as e:
         logger.error('NEW: {} {}', index_b, e)
-        time.sleep(60)
-        return
+        time.sleep(120)
+        return False
 
     # 索引创建时间
     creation_date = ES.indices.get(index_b).get(index_b, {}). \
         get('settings', {}).get('index', {}).get('creation_date')
     logger.info('NEW: {} {}', index_b,
                 datetime.fromtimestamp(int(creation_date) / 1000).isoformat() if creation_date else 'None')
-    time.sleep(10)
+    time.sleep(30)
+    return True
 
 
 def get_index_conf():
@@ -136,7 +144,7 @@ def delete_old_indexs():
         if n > 0:
             old_index = '{}_{}'.format(index, (datetime.now() - timedelta(days=n)).strftime('%y%m%d'))
             try:
-                ES.indices.delete(old_index, timeout='180s', ignore=[400, 404])
+                ES.indices.delete(old_index, timeout='240s', ignore=[400, 404])
             except Exception as e:
                 logger.error('DELETE: {} {}', old_index, e)
                 time.sleep(60)
