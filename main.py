@@ -9,13 +9,13 @@
     :update: Fufu, 2021/8/21 调整结构, 新建索引时参考昨天的索引而不是今天
     :update: Fufu, 2021/9/18 超时时间增加到 240s, 创建索引失败记录并重试
     :update: Fufu, 2021/11/3 超时时间统一为 300s, 保存最新的 MAPPING, 补齐配置中可能的索引
+    :update: Fufu, 2021/11/17 创建索引增加新重试机制, 重试 5 轮
 """
 import json
 import os
 import sys
 import time
 from datetime import datetime, timedelta
-from hashlib import md5
 
 import requests as requests
 from elasticsearch import Elasticsearch
@@ -24,6 +24,7 @@ from loguru import logger
 
 ROOT_DIR = os.path.dirname(os.path.realpath(sys.argv[0]))
 MAPPING_FILE = os.path.join(ROOT_DIR, 'etc', 'all_indices_mapping.json')
+MAX_RETRIES = 5
 ES = None
 
 
@@ -96,11 +97,11 @@ def create_new_indexs():
         if not create_index(index_b, conf):
             retries_indexs.append([index_b, conf])
 
-    for x in retries_indexs:
-        create_index(*x)
-
     # 保存最新的 MAPPING
     save_mapping(mapping)
+
+    # 重试创建已失败的索引
+    retry_create_index(retries_indexs)
 
 
 def load_mapping():
@@ -110,7 +111,7 @@ def load_mapping():
             res = json.load(f)
             return res
     except Exception as e:
-        logger.error('LOAD MAPPING: {}', e)
+        logger.error('LOAD-MAPPING: {}', e)
         return {}
 
 
@@ -120,12 +121,17 @@ def save_mapping(mapping=None):
         with open(MAPPING_FILE, 'w') as f:
             json.dump(mapping, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error('SAVE MAPPING: {}', e)
+        logger.error('SAVE-MAPPING: {}', e)
 
 
 def create_index(index_b, conf):
     """建明天的索引"""
     logger.info('NEW-START: {}', index_b)
+
+    # 先查询索引是否已存在
+    if check_index(index_b):
+        return True
+
     try:
         ES.indices.create(index_b, body=conf, timeout='300s', ignore=400)
     except Exception as e:
@@ -133,12 +139,32 @@ def create_index(index_b, conf):
         time.sleep(60)
         return False
 
-    # 索引创建时间
-    creation_date = ES.indices.get(index_b).get(index_b, {}). \
-        get('settings', {}).get('index', {}).get('creation_date')
-    logger.info('NEW-END: {} {}', index_b,
-                datetime.fromtimestamp(int(creation_date) / 1000).isoformat() if creation_date else 'None')
-    time.sleep(30)
+    return check_index(index_b)
+
+
+def retry_create_index(retries_indexs):
+    """重试创建索引, 直到创建成功"""
+    for m in range(MAX_RETRIES):
+        n = len(retries_indexs)
+        logger.info("RETRY-CREATE: {}, COUNT: {}", m + 1, n)
+        while n > 0:
+            if create_index(*retries_indexs[n - 1]):
+                retries_indexs.pop(n - 1)
+                n -= 1
+
+
+def check_index(index):
+    """获取索引创建时间"""
+    try:
+        creation_date = ES.indices.get(index).get(index, {}). \
+            get('settings', {}).get('index', {}).get('creation_date')
+        if not creation_date:
+            return False
+    except Exception:
+        return False
+
+    logger.info('NEW-END: {} {}', index, datetime.fromtimestamp(int(creation_date) / 1000).isoformat())
+    time.sleep(1)
     return True
 
 
