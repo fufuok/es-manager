@@ -146,6 +146,8 @@ def retry_create_index(retries_indexs):
     """重试创建索引, 直到创建成功"""
     for m in range(MAX_RETRIES):
         n = len(retries_indexs)
+        if n == 0:
+            return
         logger.info("RETRY-CREATE: {}, COUNT: {}", m + 1, n)
         while n > 0:
             if create_index(*retries_indexs[n - 1]):
