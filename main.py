@@ -9,7 +9,8 @@
     :update: Fufu, 2021/8/21 调整结构, 新建索引时参考昨天的索引而不是今天
     :update: Fufu, 2021/9/18 超时时间增加到 240s, 创建索引失败记录并重试
     :update: Fufu, 2021/11/3 超时时间统一为 300s, 保存最新的 MAPPING, 补齐配置中可能的索引
-    :update: Fufu, 2021/11/17 创建索引增加新重试机制, 重试 5 轮
+    :update: Fufu, 2021/11/17 增加新重试机制, 重试 5 轮
+    :update: Fufu, 2021/11/18 增加删除重试机制, 重试 5 轮. 不自动创建 Kibana 相关索引
 """
 import json
 import os
@@ -66,7 +67,7 @@ def create_new_indexs():
     today = datetime.now()
     yesterday = today + timedelta(days=-1)
     tomorrow = today + timedelta(days=1)
-    suffix = {yesterday.strftime(x): tomorrow.strftime(x) for x in ['_%y%m%d', '.%m.%d']}
+    suffix = {yesterday.strftime(x): tomorrow.strftime(x) for x in ['_%y%m%d']}
 
     remove_settings = ['uuid', 'provided_name', 'version', 'creation_date']
     retries_indexs = []
@@ -130,6 +131,8 @@ def create_index(index_b, conf):
 
     # 先查询索引是否已存在
     if check_index(index_b):
+        logger.info('EXISTS: {}', index_b)
+        time.sleep(0.5)
         return True
 
     try:
@@ -139,7 +142,13 @@ def create_index(index_b, conf):
         time.sleep(60)
         return False
 
-    return check_index(index_b)
+    creation_date = check_index(index_b)
+    if creation_date:
+        logger.info('NEW-END: {} {}', index_b, datetime.fromtimestamp(int(creation_date) / 1000).isoformat())
+        time.sleep(1)
+        return True
+
+    return False
 
 
 def retry_create_index(retries_indexs):
@@ -160,14 +169,9 @@ def check_index(index):
     try:
         creation_date = ES.indices.get(index).get(index, {}). \
             get('settings', {}).get('index', {}).get('creation_date')
-        if not creation_date:
-            return False
+        return creation_date if creation_date else 0
     except Exception:
-        return False
-
-    logger.info('NEW-END: {} {}', index, datetime.fromtimestamp(int(creation_date) / 1000).isoformat())
-    time.sleep(1)
-    return True
+        return 0
 
 
 def get_index_conf():
@@ -212,18 +216,27 @@ def get_index_conf():
 
 def delete_old_indexs():
     """按配置删除旧索引"""
-    for index, n in get_index_conf().items():
-        if n > 0:
-            old_index = '{}_{}'.format(index, (datetime.now() - timedelta(days=n)).strftime('%y%m%d'))
-            try:
-                ES.indices.delete(old_index, timeout='300s', ignore=[400, 404])
-            except Exception as e:
-                logger.error('DELETE: {} {}', old_index, e)
-                time.sleep(30)
+    indexs = get_index_conf()
+    for m in range(MAX_RETRIES):
+        n = len(indexs)
+        if n == 0:
+            return
+        logger.info("DELETE-INDEX: {}, COUNT: {}", m + 1, n)
+        for index in list(indexs.keys()):
+            days = indexs[index]
+            if days <= 0:
+                indexs.pop(index)
                 continue
 
-            logger.info('DELETE: {}', old_index)
-            time.sleep(10)
+            old_index = '{}_{}'.format(index, (datetime.now() - timedelta(days)).strftime('%y%m%d'))
+            try:
+                ES.indices.delete(old_index, timeout='300s', ignore=[400, 404])
+                indexs.pop(index)
+                logger.info('DELETE-OK: {}', old_index)
+                time.sleep(1)
+            except Exception as e:
+                logger.error('DELETE-ERROR: {} {}', old_index, e)
+                time.sleep(30)
 
 
 if __name__ == '__main__':
