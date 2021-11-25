@@ -11,6 +11,7 @@
     :update: Fufu, 2021/11/3 超时时间统一为 300s, 保存最新的 MAPPING, 补齐配置中可能的索引
     :update: Fufu, 2021/11/17 增加新重试机制, 重试 5 轮
     :update: Fufu, 2021/11/18 增加删除重试机制, 重试 5 轮. 不自动创建 Kibana 相关索引
+    :update: Fufu, 2021/11/24 删除列表中的索引最长保留时间为 190 天
 """
 import json
 import os
@@ -26,6 +27,7 @@ from loguru import logger
 ROOT_DIR = os.path.dirname(os.path.realpath(sys.argv[0]))
 MAPPING_FILE = os.path.join(ROOT_DIR, 'etc', 'all_indices_mapping.json')
 MAX_RETRIES = 5
+MAX_DAYS = 190
 ES = None
 
 
@@ -225,8 +227,7 @@ def delete_old_indexs():
         for index in list(indexs.keys()):
             days = indexs[index]
             if days <= 0:
-                indexs.pop(index)
-                continue
+                days = 190
 
             old_index = '{}_{}'.format(index, (datetime.now() - timedelta(days)).strftime('%y%m%d'))
             try:
