@@ -12,12 +12,14 @@
     :update: Fufu, 2021/11/17 增加新重试机制, 重试 5 轮
     :update: Fufu, 2021/11/18 增加删除重试机制, 重试 5 轮. 不自动创建 Kibana 相关索引
     :update: Fufu, 2021/11/24 删除列表中的索引最长保留时间为 190 天
+    :update: Fufu, 2022/04/29 增加提前新建后天的索引
 """
 import json
 import os
 import sys
 import time
 from datetime import datetime, timedelta
+from hashlib import md5
 
 import requests as requests
 from elasticsearch import Elasticsearch
@@ -26,8 +28,13 @@ from loguru import logger
 
 ROOT_DIR = os.path.dirname(os.path.realpath(sys.argv[0]))
 MAPPING_FILE = os.path.join(ROOT_DIR, 'etc', 'all_indices_mapping.json')
+INDEX_YMD_FORMAT = '_%y%m%d'
+# 创建/删除索引重试次数
 MAX_RETRIES = 5
-MAX_DAYS = 190
+# 默认删除 7 天前的索引
+DEFAULT_DAYS = 7
+# 未指定天数时, 0 表示 190 天
+DEFAULT_DAYS_0 = 190
 ES = None
 
 
@@ -69,36 +76,42 @@ def create_new_indexs():
     today = datetime.now()
     yesterday = today + timedelta(days=-1)
     tomorrow = today + timedelta(days=1)
-    suffix = {yesterday.strftime(x): tomorrow.strftime(x) for x in ['_%y%m%d']}
+    after_tomorrow = today + timedelta(days=2)
+
+    # 昨天, 明天, 后天, 索引日志后缀
+    suffix_a = yesterday.strftime(INDEX_YMD_FORMAT)
+    suffix_b = tomorrow.strftime(INDEX_YMD_FORMAT)
+    suffix_c = after_tomorrow.strftime(INDEX_YMD_FORMAT)
 
     remove_settings = ['uuid', 'provided_name', 'version', 'creation_date']
     retries_indexs = []
 
-    for a, b in suffix.items():
-        pos = len(a)
-        # 取昨天的索引配置
-        for index, conf in ES.indices.get('*' + a).items():
-            index_title = index[:-pos]
-            # 移除必要配置项
-            for x in remove_settings:
-                conf['settings']['index'].pop(x)
-            # 保存最新索引配置项
-            mapping[index_title] = conf
-            indices[index_title] = True
-            # 建明天的索引
-            index_b = index_title + b
-            if not create_index(index_b, conf):
-                retries_indexs.append([index_b, conf])
+    pos = len(suffix_a)
+    # 取昨天的索引配置
+    for index, conf in ES.indices.get('*' + suffix_a).items():
+        index_title = index[:-pos]
+        # 移除必要配置项
+        for x in remove_settings:
+            conf['settings']['index'].pop(x)
+        # 保存最新索引配置项
+        mapping[index_title] = conf
+        indices[index_title] = True
+        # 建未来的索引
+        for x in [suffix_b, suffix_c]:
+            index_x = index_title + x
+            if not create_index(index_x, conf):
+                retries_indexs.append([index_x, conf])
 
     # 补漏, 可能存在于待删除列表
-    index_ymd = tomorrow.strftime('_%y%m%d')
     for index_title in get_index_conf():
         if index_title in indices:
             continue
         conf = mapping.get(index_title, {})
-        index_b = index_title + index_ymd
-        if not create_index(index_b, conf):
-            retries_indexs.append([index_b, conf])
+        # 建未来的索引
+        for x in [suffix_b, suffix_c]:
+            index_x = index_title + x
+            if not create_index(index_x, conf):
+                retries_indexs.append([index_x, conf])
 
     # 保存最新的 MAPPING
     save_mapping(mapping)
@@ -208,7 +221,7 @@ def get_index_conf():
                 try:
                     n = int(n.strip())
                 except Exception:
-                    n = 7
+                    n = DEFAULT_DAYS
                 res[index] = n
             return res
     except Exception as e:
@@ -227,9 +240,9 @@ def delete_old_indexs():
         for index in list(indexs.keys()):
             days = indexs[index]
             if days <= 0:
-                days = 190
+                days = DEFAULT_DAYS_0
 
-            old_index = '{}_{}'.format(index, (datetime.now() - timedelta(days)).strftime('%y%m%d'))
+            old_index = '{}{}'.format(index, (datetime.now() - timedelta(days)).strftime(INDEX_YMD_FORMAT))
             try:
                 ES.indices.delete(old_index, timeout='300s', ignore=[400, 404])
                 indexs.pop(index)
