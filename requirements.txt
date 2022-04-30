@@ -1,4 +1,4 @@
-elasticsearch>=6.0.0,<7.0.0
+elasticsearch>=6.0.0
 loguru~=0.5.3
 requests~=2.26.0
 envcrypto~=0.2.0
