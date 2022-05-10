@@ -143,19 +143,23 @@ def save_mapping(mapping=None):
 def create_index(index_b, conf):
     """建明天的索引"""
     logger.info('NEW-START: {}', index_b)
+    time.sleep(1)
 
     # 先查询索引是否已存在
     if check_index(index_b):
         logger.info('EXISTS: {}', index_b)
-        time.sleep(0.5)
         return True
 
     try:
-        ES.indices.create(index_b, body=conf, timeout='300s', ignore=400)
+        res = ES.indices.create(index_b, body=conf, timeout='300s', ignore=400)
+        logger.info('NEW-RESULT: {}, OK: {}, [{}] {}', index_b,
+                    res.get('acknowledged'), res.get('status'), res.get('error', {}).get('reason', ''))
     except Exception as e:
         logger.error('NEW-ERROR: {} {}', index_b, e)
         time.sleep(60)
         return False
+
+    time.sleep(30)
 
     creation_date = check_index(index_b)
     if creation_date:
@@ -163,20 +167,19 @@ def create_index(index_b, conf):
         time.sleep(1)
         return True
 
+    time.sleep(30)
+    logger.info('NEW-CHECK: {} NONE', index_b)
     return False
 
 
 def retry_create_index(retries_indexs):
-    """重试创建索引, 直到创建成功"""
-    for m in range(MAX_RETRIES):
-        n = len(retries_indexs)
-        if n == 0:
-            return
-        logger.info("RETRY-CREATE: {}, COUNT: {}", m + 1, n)
-        while n > 0:
-            if create_index(*retries_indexs[n - 1]):
-                retries_indexs.pop(n - 1)
-                n -= 1
+    """重试创建索引"""
+    logger.info("RETRY-INDEXS: {}", retries_indexs)
+    for cfg in retries_indexs:
+        for m in range(MAX_RETRIES):
+            logger.info("RETRY-CREATE({}): {}", m, cfg)
+            if create_index(*cfg):
+                break
 
 
 def check_index(index):
@@ -254,18 +257,18 @@ def delete_old_indexs():
 
 
 if __name__ == '__main__':
-    hosts_es = [
+    hosts_main = [
         {'host': '192.168.0.10', 'port': 9200},
         {'host': '192.168.0.11', 'port': 9200},
         {'host': '192.168.0.12', 'port': 9200},
     ]
-    # hosts_dev = [{'host': '1.2.3.4', 'port': 9200}]
+    hosts_dev = [{'host': '127.0.0.1', 'port': 9200}]
 
     init_logger()
 
     logger.info('init es client')
-    # ES = init_es(hosts_dev)
-    ES = init_es(hosts_es)
+    # ES = init_es(hosts_main)
+    ES = init_es(hosts_dev)
 
     logger.info('create new indexs')
     create_new_indexs()
