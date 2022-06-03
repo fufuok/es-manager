@@ -13,6 +13,7 @@
     :update: Fufu, 2021/11/18 增加删除重试机制, 重试 5 轮. 不自动创建 Kibana 相关索引
     :update: Fufu, 2021/11/24 删除列表中的索引最长保留时间为 190 天
     :update: Fufu, 2022/04/29 增加提前新建后天的索引
+    :update: Fufu, 2022/06/02 新增索引时不使用 settings, 由模板决定
 """
 import json
 import os
@@ -83,16 +84,14 @@ def create_new_indexs():
     suffix_b = tomorrow.strftime(INDEX_YMD_FORMAT)
     suffix_c = after_tomorrow.strftime(INDEX_YMD_FORMAT)
 
-    remove_settings = ['uuid', 'provided_name', 'version', 'creation_date']
     retries_indexs = []
 
     pos = len(suffix_a)
     # 取昨天的索引配置
     for index, conf in ES.indices.get('*' + suffix_a).items():
         index_title = index[:-pos]
-        # 移除必要配置项
-        for x in remove_settings:
-            conf['settings']['index'].pop(x)
+        # 移除 settings 配置项
+        conf.pop("settings", None)
         # 保存最新索引配置项
         mapping[index_title] = conf
         indices[index_title] = True
@@ -159,7 +158,7 @@ def create_index(index_b, conf):
         time.sleep(60)
         return False
 
-    time.sleep(30)
+    time.sleep(60)
 
     creation_date = check_index(index_b)
     if creation_date:
