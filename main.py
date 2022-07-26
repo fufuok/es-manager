@@ -14,6 +14,7 @@
     :update: Fufu, 2021/11/24 删除列表中的索引最长保留时间为 190 天
     :update: Fufu, 2022/04/29 增加提前新建后天的索引
     :update: Fufu, 2022/06/02 新增索引时不使用 settings, 由模板决定
+    :update: Fufu, 2022/07/25 支持 ES 账号密码认证
 """
 import json
 import os
@@ -36,6 +37,8 @@ MAX_RETRIES = 5
 DEFAULT_DAYS = 7
 # 未指定天数时, 0 表示 190 天
 DEFAULT_DAYS_0 = 190
+# ES 账号密码认证
+ES_HTTP_AUTH = None
 ES = None
 
 
@@ -61,9 +64,11 @@ def init_logger():
 
 def init_es(hosts):
     """连接 ES"""
-    for i in range(5):
+    client = Elasticsearch(hosts, max_retries=3, timeout=30, retry_on_timeout=False)
+    for i in range(3):
         try:
-            return Elasticsearch(hosts, timeout=300)
+            client.info(http_auth=ES_HTTP_AUTH)
+            return client
         except Exception as e:
             logger.error('INIT: ({}) {}', i, e)
 
@@ -77,18 +82,19 @@ def create_new_indexs():
     today = datetime.now()
     yesterday = today + timedelta(days=-1)
     tomorrow = today + timedelta(days=1)
-    after_tomorrow = today + timedelta(days=2)
+    # after_tomorrow = today + timedelta(days=2)
 
     # 昨天, 明天, 后天, 索引日志后缀
     suffix_a = yesterday.strftime(INDEX_YMD_FORMAT)
     suffix_b = tomorrow.strftime(INDEX_YMD_FORMAT)
-    suffix_c = after_tomorrow.strftime(INDEX_YMD_FORMAT)
+    # suffix_c = after_tomorrow.strftime(INDEX_YMD_FORMAT)
 
     retries_indexs = []
 
     pos = len(suffix_a)
     # 取昨天的索引配置
-    for index, conf in ES.indices.get('*' + suffix_a).items():
+    index_yesterday = '*' + suffix_a
+    for index, conf in ES.indices.get(index=index_yesterday, http_auth=ES_HTTP_AUTH).items():
         index_title = index[:-pos]
         # 移除 settings 配置项
         conf.pop("settings", None)
@@ -96,7 +102,7 @@ def create_new_indexs():
         mapping[index_title] = conf
         indices[index_title] = True
         # 建未来的索引
-        for x in [suffix_b, suffix_c]:
+        for x in [suffix_b]:
             index_x = index_title + x
             if not create_index(index_x, conf):
                 retries_indexs.append([index_x, conf])
@@ -107,7 +113,7 @@ def create_new_indexs():
             continue
         conf = mapping.get(index_title, {})
         # 建未来的索引
-        for x in [suffix_b, suffix_c]:
+        for x in [suffix_b]:
             index_x = index_title + x
             if not create_index(index_x, conf):
                 retries_indexs.append([index_x, conf])
@@ -150,7 +156,7 @@ def create_index(index_b, conf):
         return True
 
     try:
-        res = ES.indices.create(index_b, body=conf, timeout='300s', ignore=400)
+        res = ES.indices.create(index=index_b, timeout='300s', ignore=400, http_auth=ES_HTTP_AUTH, **conf)
         logger.info('NEW-RESULT: {}, OK: {}, [{}] {}', index_b,
                     res.get('acknowledged'), res.get('status'), res.get('error', {}).get('reason', ''))
     except Exception as e:
@@ -184,7 +190,7 @@ def retry_create_index(retries_indexs):
 def check_index(index):
     """获取索引创建时间"""
     try:
-        creation_date = ES.indices.get(index).get(index, {}). \
+        creation_date = ES.indices.get(index=index, http_auth=ES_HTTP_AUTH).get(index, {}). \
             get('settings', {}).get('index', {}).get('creation_date')
         return creation_date if creation_date else 0
     except Exception:
@@ -246,7 +252,7 @@ def delete_old_indexs():
 
             old_index = '{}{}'.format(index, (datetime.now() - timedelta(days)).strftime(INDEX_YMD_FORMAT))
             try:
-                ES.indices.delete(old_index, timeout='300s', ignore=[400, 404])
+                ES.indices.delete(index=old_index, timeout='300s', ignore=[400, 404], http_auth=ES_HTTP_AUTH)
                 indexs.pop(index)
                 logger.info('DELETE-OK: {}', old_index)
                 time.sleep(1)
@@ -266,7 +272,11 @@ if __name__ == '__main__':
     init_logger()
 
     logger.info('init es client')
-    # ES = init_es(hosts_main)
+
+    es_http_auth = get_environ('ESM_HTTP_AUTH', 'ESM_HTTP_AUTH')
+    ES_HTTP_AUTH = tuple(es_http_auth.split(':', 1)) if es_http_auth else None
+
+    # ES = init_es(hosts_kibana)
     ES = init_es(hosts_dev)
 
     logger.info('create new indexs')
